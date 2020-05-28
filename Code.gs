@@ -64,11 +64,31 @@ class TinkoffClient {
         return data.payload.operations
     }
     
-    getAllOperations(from, to) {
-        // Arguments `from` && `to` should be in ISO 8601 format
-        const url = `operations?from=${from}&to=${to}`
+    getBrokerAccountId(brokerType) {
+        const url = `user/accounts`
         const data = this._makeApiCall(url)
-        return data.payload.operations
+        const accounts = data.payload.accounts
+        for (let q = 0; q < accounts.length; q++) {
+            const {brokerAccountType, brokerAccountId} = accounts[q]
+            if (brokerAccountType == brokerType) {
+                return brokerAccountId
+            }
+        }
+        return null
+    }
+    
+    getAllOperations(from, to, brokerType) {
+        // Arguments `from` && `to` should be in ISO 8601 format
+        if (brokerType) {
+            const brokerAccountId = this.getBrokerAccountId(brokerType)
+            const url = `operations?from=${from}&to=${to}&brokerAccountId=${brokerAccountId}`
+            const data = this._makeApiCall(url)
+            return data.payload.operations
+        } else {
+            const url = `operations?from=${from}&to=${to}`
+            const data = this._makeApiCall(url)
+            return data.payload.operations
+        }
     }
         
     getUserAccounts() {
@@ -81,6 +101,19 @@ class TinkoffClient {
         const url = `portfolio`
         const data = this._makeApiCall(url)
         return data.payload.positions
+    }
+    
+    getPortfolioCurrencies(brokerType) {
+        if (brokerType) {
+            const brokerAccountId = this.getBrokerAccountId(brokerType)
+            const url = `portfolio/currencies?brokerAccountId=${brokerAccountId}`
+            const data = this._makeApiCall(url)
+            return data.payload.currencies
+        } else {
+            const url = `portfolio/currencies`
+            const data = this._makeApiCall(url)
+            return data.payload.currencies
+        }
     }
     
 }
@@ -111,8 +144,11 @@ function getPriceByTicker(ticker, dummy) {
     if (!ticker) {
         return null
     }
-    if (ticker == "MYRUB_TICKER") {
+    if (ticker == "MYRUB_TICKER" || ticker == "RUB") {
         return 1
+    }
+    if (Currencies.has(ticker)) {
+        ticker = Currencies.get(ticker)
     }
     const figi = _getFigiByTicker(ticker)
     const {lastPrice} = tinkoffClient.getOrderbookByFigi(figi)
@@ -139,7 +175,7 @@ function _calculateTrades(trades) {
   return [totalQuantity, totalSum, weigthedPrice]
 }
     
-function getTrades(ticker, from, to) {
+function getTradesByTicker(ticker, from, to) {
   const figi = _getFigiByTicker(ticker)
   if (!from) {
     from = TRADING_START_AT.toISOString()
@@ -170,7 +206,39 @@ function getTrades(ticker, from, to) {
   return values
 }
 
-function getAllTrades(from, to) {
+function getPortfolioCurrencies(brokerType) {
+    const currencies = tinkoffClient.getPortfolioCurrencies(brokerType)
+    let broker = `BROKER`
+    if (brokerType && brokerType == `TinkoffIis`) {
+        broker = `IIS`
+    }
+    
+    
+    let rates = new Map();
+    rates.set("USD", getPriceByTicker(Currencies.get("USD")));
+    rates.set("EUR", getPriceByTicker(Currencies.get("EUR")));
+    rates.set("RUB", 1);
+    
+    const values = [
+        ["BrokerAccount", "Currency", "Balance", "Balance in RUB"]
+    ]
+    for (let q = 0; q < currencies.length; q++) {
+        const {currency, balance} = currencies[q]
+        values.push(
+            [broker, currency, balance, balance * rates.get(currency)]
+        )
+    }
+    return values
+}
+
+function getAllPortfolioCurrencies() {
+    const values = getPortfolioCurrencies("Tinkoff")
+    const valuesIis = getPortfolioCurrencies("TinkoffIis")
+    valuesIis.shift()
+    return values.concat(valuesIis)
+}
+
+function getTrades(from, to, brokerType) {
     if (!from) {
         from = TRADING_START_AT.toISOString()
     }
@@ -179,7 +247,11 @@ function getAllTrades(from, to) {
         to = new Date(now + MILLIS_PER_DAY)
         to = to.toISOString()
     }
-    const operations = tinkoffClient.getAllOperations(from, to)
+    let broker = `BROKER`
+    if (brokerType && brokerType == `TinkoffIis`) {
+        broker = `IIS`
+    }
+    const operations = tinkoffClient.getAllOperations(from, to, brokerType)
     
     const values = [
         ["Ticker", "Open", "Close", "Open date", "Close date", "Days", "Result in %", "BrokerAccount", "Quantity", "Sum", "Commission", "Result", "Currency", "Result in RUB"], 
@@ -228,7 +300,7 @@ function getAllTrades(from, to) {
         let my_op = {
             'price': my_price, 
             'date': my_date, 
-            'brokerAcc': `BROKER`, 
+            'brokerAcc': broker, 
             'quantity': quantity, 
             'sum': my_payment, 
             'commission': my_commission, 
@@ -302,7 +374,14 @@ function getAllTrades(from, to) {
     return values
 }
 
-function getPays(from, to) {
+function getAllTrades(from, to) {
+    const values = getTrades(from, to, "Tinkoff")
+    const valuesIis = getTrades(from, to, "TinkoffIis")
+    valuesIis.shift()
+    return values.concat(valuesIis)
+}
+
+function getPays(from, to, brokerType) {
     if (!from) {
         from = TRADING_START_AT.toISOString()
     }
@@ -311,7 +390,10 @@ function getPays(from, to) {
         to = new Date(now + MILLIS_PER_DAY)
         to = to.toISOString()
     }
-    const operations = tinkoffClient.getAllOperations(from, to)
+    let broker = `BROKER`
+    if (brokerType && brokerType == `TinkoffIis`) {
+        broker = `IIS`
+    }
     
     let rates = new Map();
     rates.set("USD", getPriceByTicker(Currencies.get("USD")));
@@ -319,8 +401,11 @@ function getPays(from, to) {
     rates.set("RUB", 1);
   
     const values = [
-        ["Currency", "Payment", "Payment in RUB (on today)", "Date", "Operation Type"], 
+        ["BrokerAccount", "Currency", "Payment", "Payment in RUB (on today)", "Date", "Operation Type"], 
     ]
+    
+    const operations = tinkoffClient.getAllOperations(from, to, brokerType)
+    
     for (let i=operations.length-1; i>=0; i--) {
         const {status, currency, payment, date, operationType} = operations[i]
         
@@ -334,13 +419,20 @@ function getPays(from, to) {
         let my_payment = payment * rates.get(currency)
     
         values.push([
-            currency, payment, my_payment, my_date, operationType
+            broker, currency, payment, my_payment, my_date, operationType
         ])
     }
     return values
 }
 
-function getTaxes(from, to) {
+function getAllPays(from, to) {
+    const values = getPays(from, to, "Tinkoff")
+    const valuesIis = getPays(from, to, "TinkoffIis")
+    valuesIis.shift()
+    return values.concat(valuesIis)    
+}
+
+function getTaxes(from, to, brokerType) {
     if (!from) {
         from = TRADING_START_AT.toISOString()
     }
@@ -349,7 +441,12 @@ function getTaxes(from, to) {
         to = new Date(now + MILLIS_PER_DAY)
         to = to.toISOString()
     }
-    const operations = tinkoffClient.getAllOperations(from, to)
+    let broker = `BROKER`
+    if (brokerType && brokerType == `TinkoffIis`) {
+        broker = `IIS`
+    }
+    
+    const operations = tinkoffClient.getAllOperations(from, to, brokerType)
     
     let rates = new Map();
     rates.set("USD", getPriceByTicker(Currencies.get("USD")));
@@ -357,7 +454,7 @@ function getTaxes(from, to) {
     rates.set("RUB", 1);
   
     const values = [
-        ["Currency", "Payment", "Payment in RUB (on today)", "Ticker", "Date", "Operation Type"], 
+        ["BrokerAccount", "Currency", "Payment", "Payment in RUB (on today)", "Ticker", "Date", "Operation Type"], 
     ]
     for (let i=operations.length-1; i>=0; i--) {
         const {status, currency, payment, date, operationType, figi} = operations[i]
@@ -365,7 +462,10 @@ function getTaxes(from, to) {
         if (status == "Decline") 
             continue
             
-        if (operationType != `MarginCommission` && operationType != `ServiceCommission` && operationType.indexOf(`Tax`) == -1)
+        if (operationType == `BrokerCommission`)
+            continue
+            
+        if (operationType.indexOf(`Commission`) == -1 && operationType.indexOf(`Tax`) == -1)
             continue
           
         let ticker = null
@@ -377,13 +477,20 @@ function getTaxes(from, to) {
         }
     
         values.push([
-            currency, payment, my_payment, ticker, my_date, operationType
+            broker, currency, payment, my_payment, ticker, my_date, operationType
         ])
     }
     return values
 }
 
-function getDividends(from, to) {
+function getAllTaxes(from, to) {
+    const values = getTaxes(from, to, "Tinkoff")
+    const valuesIis = getTaxes(from, to, "TinkoffIis")
+    valuesIis.shift()
+    return values.concat(valuesIis)    
+}
+
+function getDividends(from, to, brokerType) {
     if (!from) {
         from = TRADING_START_AT.toISOString()
     }
@@ -392,7 +499,11 @@ function getDividends(from, to) {
         to = new Date(now + MILLIS_PER_DAY)
         to = to.toISOString()
     }
-    const operations = tinkoffClient.getAllOperations(from, to)
+    let broker = `BROKER`
+    if (brokerType && brokerType == `TinkoffIis`) {
+        broker = `IIS`
+    }
+    const operations = tinkoffClient.getAllOperations(from, to, brokerType)
     
     let rates = new Map();
     rates.set("USD", getPriceByTicker(Currencies.get("USD")));
@@ -400,7 +511,7 @@ function getDividends(from, to) {
     rates.set("RUB", 1);
   
     const values = [
-        ["Currency", "Payment", "Payment in RUB (on today)", "Ticker", "Date", "Operation Type"], 
+        ["BrokerAccount", "Currency", "Payment", "Payment in RUB (on today)", "Ticker", "Date", "Operation Type"], 
     ]
     for (let i=operations.length-1; i>=0; i--) {
         const {status, currency, payment, date, operationType, figi} = operations[i]
@@ -420,8 +531,15 @@ function getDividends(from, to) {
         }
     
         values.push([
-            currency, payment, my_payment, ticker, my_date, operationType
+            broker, currency, payment, my_payment, ticker, my_date, operationType
         ])
     }
     return values
+}
+
+function getAllDividends(from, to) {
+    const values = getDividends(from, to, "Tinkoff")
+    const valuesIis = getDividends(from, to, "TinkoffIis")
+    valuesIis.shift()
+    return values.concat(valuesIis)    
 }
