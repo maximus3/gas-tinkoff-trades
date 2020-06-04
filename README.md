@@ -7,8 +7,8 @@
 
 ## Установка
 
-* Создать или открыть документ Google Spreadsheets http://drive.google.com
-* https://docs.google.com/spreadsheets/d/1lcouODkG---kFDbQmu-MK-Lu82s0Jt6Pjvy0eZTW6xM/edit?usp=sharing
+* Создать или открыть документ Google Spreadsheets http://drive.google.com (скопировать по ссылке ниже)
+* https://docs.google.com/spreadsheets/d/1nAUihO7EH50UXT50TGcExI0H6LW1tKqNLX33jaWgLic/edit?usp=sharing
 * В меню "Tools" выбрать "Script Editor"
 * Дать проекту имя, например `TinkoffTrades`
 * Скопировать код из [Code.gs](https://raw.githubusercontent.com/ErhoSen/gas-tinkoff-trades/master/Code.gs)
