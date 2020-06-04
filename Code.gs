@@ -11,15 +11,43 @@ Currencies.set("EUR", "EUR_RUB__TOM");
 Currencies.set("RUB", "MYRUB_TICKER");
 
 function isoToDate(dateStr){
-  // How to format date string so that google scripts recognizes it?
-  // https://stackoverflow.com/a/17253060
-  const str = dateStr.replace(/-/,'/').replace(/-/,'/').replace(/T/,' ').replace(/\+/,' \+').replace(/Z/,' +00')
-  return new Date(str)
+    // How to format date string so that google scripts recognizes it?
+    // https://stackoverflow.com/a/17253060
+    const str = dateStr.replace(/-/,'/').replace(/-/,'/').replace(/T/,' ').replace(/\+/,' \+').replace(/Z/,' +00')
+    return new Date(str)
+}
+
+function getToday() {
+    const now = new Date()
+    let day = new Date(now + MILLIS_PER_DAY)
+    //let day = new Date('Apr 01, 2020 10:00:00')
+    return day.toISOString()
 }
 
 function onEdit(e) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet()
-  sheet.getRange('Z1').setValue(Math.random())
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet()
+    sheet.getRange('Z1').setValue(Math.random())
+}
+
+function makeDateISO(miles) {
+    day = new Date(miles)
+    day.setHours(0)
+    day.setMinutes(0)
+    day.setSeconds(0)
+    day.setMilliseconds(0)
+    return day.toISOString()
+}
+
+function getNextDate(day) {
+    day = isoToDate(day)
+    next = new Date(day.getTime() + MILLIS_PER_DAY)
+    return next.toISOString()
+}
+
+function getPrevDate(day) {
+    day = isoToDate(day)
+    prev = new Date(day.getTime() - MILLIS_PER_DAY)
+    return prev.toISOString()
 }
 
 class TinkoffClient {
@@ -116,9 +144,27 @@ class TinkoffClient {
         }
     }
     
+    getCandlesDay(figi, from, to) {
+        const url = `market/candles?figi=${figi}&from=${from}&to=${to}&interval=day`
+        const data = this._makeApiCall(url)
+        return data.payload.candles
+    }
+    
 }
     
 const tinkoffClient = new TinkoffClient(OPENAPI_TOKEN)
+
+function getNameByTicker(ticker) {
+    if (!ticker) {
+        return null
+    }
+    const cached = CACHE.get(`${ticker}_name`)
+    if (cached != null) 
+        return cached
+    const {name} = tinkoffClient.getInstrumentByTicker(ticker)
+    CACHE.put(`${ticker}_name`, name)
+    return name
+}
     
 function _getFigiByTicker(ticker) {
     const cached = CACHE.get(ticker)
@@ -155,12 +201,25 @@ function getPriceByTicker(ticker, dummy) {
     return lastPrice
 }
 
-function getNameByTicker(ticker) {
-    if (!ticker) {
-        return null
+function getCurrencyPrice(name, day) {
+    if (name == 'RUB') {
+        return 1
     }
-    const {name} = tinkoffClient.getInstrumentByTicker(ticker)
-    return name
+    if (!day) {
+        let day_to = getToday()  
+        day = getPrevDate(day_to)
+    }
+    let to = getNextDate(day)
+    ticker = Currencies.get(name)
+    figi = _getFigiByTicker(ticker)
+    let data = tinkoffClient.getCandlesDay(figi, day, to)[0]
+    while (data == undefined) {
+        day = to
+        to = getNextDate(day)
+        data = tinkoffClient.getCandlesDay(figi, day, to)[0]
+    }
+    let price = data.o
+    return price
 }
 
 function _calculateTrades(trades) {
@@ -176,14 +235,15 @@ function _calculateTrades(trades) {
 }
     
 function getTradesByTicker(ticker, from, to) {
+  if (Currencies.has(ticker)) {
+      ticker = Currencies.get(ticker)
+  }
   const figi = _getFigiByTicker(ticker)
   if (!from) {
     from = TRADING_START_AT.toISOString()
   }
   if (!to) {
-    const now = new Date()
-    to = new Date(now + MILLIS_PER_DAY)
-    to = to.toISOString()
+    to = getToday()
   }
   const operations = tinkoffClient.getOperations(from, to, figi)
   
@@ -243,9 +303,7 @@ function getTrades(from, to, brokerType) {
         from = TRADING_START_AT.toISOString()
     }
     if (!to) {
-        const now = new Date()
-        to = new Date(now + MILLIS_PER_DAY)
-        to = to.toISOString()
+        to = getToday()
     }
     let broker = `BROKER`
     if (brokerType && brokerType == `TinkoffIis`) {
@@ -258,11 +316,6 @@ function getTrades(from, to, brokerType) {
     ]
     
     let portf = new Map();
-    
-    let rates = new Map();
-    rates.set("USD", getPriceByTicker(Currencies.get("USD")));
-    rates.set("EUR", getPriceByTicker(Currencies.get("EUR")));
-    rates.set("RUB", 1);
     
     for (let q = operations.length - 1; q >= 0; q--) {
         const {status, commission, currency, trades, figi, date, operationType, instrumentType} = operations[q]
@@ -305,7 +358,8 @@ function getTrades(from, to, brokerType) {
             'sum': my_payment, 
             'commission': my_commission, 
             'currency': currency, 
-            'opType': opType
+            'opType': opType,
+            'dateISO': my_date.toISOString()
         }
         
         if (portf.has(ticker)) {
@@ -326,7 +380,7 @@ function getTrades(from, to, brokerType) {
                     const days = Math.round((my_op.date - op.date) / MILLIS_PER_DAY)
                     const res_perc = Math.round((my_op.price / op.price - 1) * 100 * isSell * 100) / 100
                     const res = (my_op.price - op.price) * qu * isSell
-                    const res_rub = res * rates.get(op.currency)
+                    const res_rub = res * getCurrencyPrice(my_op.currency, my_op.dateISO)
                     if (op.quantity >= my_op.quantity) {
                         let comis = my_op.commission + qu * op.commission / op.quantity
                         let val_op = [
@@ -386,19 +440,12 @@ function getPays(from, to, brokerType) {
         from = TRADING_START_AT.toISOString()
     }
     if (!to) {
-        const now = new Date()
-        to = new Date(now + MILLIS_PER_DAY)
-        to = to.toISOString()
+        to = getToday()
     }
     let broker = `BROKER`
     if (brokerType && brokerType == `TinkoffIis`) {
         broker = `IIS`
     }
-    
-    let rates = new Map();
-    rates.set("USD", getPriceByTicker(Currencies.get("USD")));
-    rates.set("EUR", getPriceByTicker(Currencies.get("EUR")));
-    rates.set("RUB", 1);
   
     const values = [
         ["BrokerAccount", "Currency", "Payment", "Payment in RUB (on today)", "Date", "Operation Type"], 
@@ -416,7 +463,7 @@ function getPays(from, to, brokerType) {
             continue
           
         let my_date = isoToDate(date)
-        let my_payment = payment * rates.get(currency)
+        let my_payment = payment * getCurrencyPrice(currency, makeDateISO(my_date))
     
         values.push([
             broker, currency, payment, my_payment, my_date, operationType
@@ -437,9 +484,7 @@ function getTaxes(from, to, brokerType) {
         from = TRADING_START_AT.toISOString()
     }
     if (!to) {
-        const now = new Date()
-        to = new Date(now + MILLIS_PER_DAY)
-        to = to.toISOString()
+        to = getToday()
     }
     let broker = `BROKER`
     if (brokerType && brokerType == `TinkoffIis`) {
@@ -447,11 +492,6 @@ function getTaxes(from, to, brokerType) {
     }
     
     const operations = tinkoffClient.getAllOperations(from, to, brokerType)
-    
-    let rates = new Map();
-    rates.set("USD", getPriceByTicker(Currencies.get("USD")));
-    rates.set("EUR", getPriceByTicker(Currencies.get("EUR")));
-    rates.set("RUB", 1);
   
     const values = [
         ["BrokerAccount", "Currency", "Payment", "Payment in RUB (on today)", "Ticker", "Date", "Operation Type"], 
@@ -470,7 +510,7 @@ function getTaxes(from, to, brokerType) {
           
         let ticker = null
         let my_date = isoToDate(date)
-        let my_payment = payment * rates.get(currency)
+        let my_payment = payment * getCurrencyPrice(currency, my_date.toISOString())
         
         if (figi) {
             ticker = _getTickerByFigi(figi)
@@ -495,20 +535,13 @@ function getDividends(from, to, brokerType) {
         from = TRADING_START_AT.toISOString()
     }
     if (!to) {
-        const now = new Date()
-        to = new Date(now + MILLIS_PER_DAY)
-        to = to.toISOString()
+        to = getToday()
     }
     let broker = `BROKER`
     if (brokerType && brokerType == `TinkoffIis`) {
         broker = `IIS`
     }
     const operations = tinkoffClient.getAllOperations(from, to, brokerType)
-    
-    let rates = new Map();
-    rates.set("USD", getPriceByTicker(Currencies.get("USD")));
-    rates.set("EUR", getPriceByTicker(Currencies.get("EUR")));
-    rates.set("RUB", 1);
   
     const values = [
         ["BrokerAccount", "Currency", "Payment", "Payment in RUB (on today)", "Ticker", "Date", "Operation Type"], 
@@ -524,7 +557,7 @@ function getDividends(from, to, brokerType) {
           
         let ticker = null
         let my_date = isoToDate(date)
-        let my_payment = payment * rates.get(currency)
+        let my_payment = payment * getCurrencyPrice(currency, my_date.toISOString())
         
         if (figi) {
             ticker = _getTickerByFigi(figi)
